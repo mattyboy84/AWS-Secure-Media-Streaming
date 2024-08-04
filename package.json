@@ -1,0 +1,11 @@
+{
+  "name": "aws-secure-media-streaming",
+  "version": "1.0.0",
+  "description": "hello",
+  "main": "index.js",
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/cloudfront-signer": "^3.621.0"
+  }
+}

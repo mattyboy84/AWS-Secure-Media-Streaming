@@ -1,0 +1,436 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform:
+  - AWS::LanguageExtensions
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  ChannelName:
+    Type: String
+    Description: name of the channel
+    Default: channel-z
+  ManifestName:
+    Type: String
+    Description: name of the manifest to be used in packaging origin urls
+    Default: index
+  SegmentDuration:
+    Type: Number
+    Description: name of the manifest to be used in packaging origin urls
+    Default: 2
+
+Globals:
+  Function:
+    MemorySize: 3008
+    Timeout: 900
+    CodeUri: ./
+    Runtime: nodejs20.x 
+
+Resources:
+  MediaLiveAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-MediaLiveAccessRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - medialive.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-MediaLiveCustomPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - mediastore:ListContainers
+                  - mediastore:PutObject
+                  - mediastore:GetObject
+                  - mediastore:DeleteObject
+                  - mediastore:DescribeObject
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                  - logs:DescribeLogGroups
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - mediaconnect:ManagedDescribeFlow
+                  - mediaconnect:ManagedAddOutput
+                  - mediaconnect:ManagedRemoveOutput
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ec2:describeSubnets
+                  - ec2:describeNetworkInterfaces
+                  - ec2:createNetworkInterface
+                  - ec2:createNetworkInterfacePermission
+                  - ec2:deleteNetworkInterface
+                  - ec2:deleteNetworkInterfacePermission
+                  - ec2:describeSecurityGroups
+                  - ec2:describeAddresses
+                  - ec2:associateAddress
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - mediapackage:DescribeChannel
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - mediapackagev2:PutObject
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:*
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - kms:*
+                Resource: "*"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
+  
+  contentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-content-bucket"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+            BucketKeyEnabled: true
+      #NotificationConfiguration: # send events to eventbridge
+      #  EventBridgeConfiguration:
+      #    EventBridgeEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      #VersioningConfiguration:
+      #  Status: Enabled
+    DeletionPolicy: Delete
+  
+  s3Input:
+    Type: AWS::MediaLive::Input
+    Properties:
+      Name: s3Input
+      Type: MP4_FILE
+      Sources:
+        - Url: !Sub "s3://${contentBucket}/video.mp4"
+  
+  mediaChannel:
+    Type: AWS::MediaLive::Channel
+    Properties:
+      Name: !Ref ChannelName
+      ChannelClass: SINGLE_PIPELINE
+      Destinations:
+        - Id: !Join ['', [!Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]], "-", !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]]]]
+          Settings:
+            - Url: !Join ['', ["https://", !Select [0, !Split ['.', !GetAtt mediaPackageV2ChannelGroup.EgressDomain]], "-1.ingest.", !Select [2, !Split ['.', !GetAtt mediaPackageV2ChannelGroup.EgressDomain]], !Sub ".mediapackagev2.${AWS::Region}.amazonaws.com/in/v1/", !Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]], "/1/", !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]], !Sub "/${ManifestName}"]]
+      EncoderSettings:
+        AudioDescriptions:
+          - Name: high
+            AudioSelectorName: Main
+            CodecSettings:
+              AacSettings:
+                InputType: NORMAL
+                Bitrate: 128000
+                CodingMode: CODING_MODE_2_0
+                RawFormat: NONE
+                Spec: MPEG4
+                Profile: LC
+                RateControlMode: CBR
+                SampleRate: 48000
+            AudioTypeControl: FOLLOW_INPUT
+            LanguageCodeControl: FOLLOW_INPUT
+        VideoDescriptions:
+          - Name: 1280x720
+            Width: 1280
+            Height: 720
+            RespondToAfd: NONE
+            Sharpness: 50
+            ScalingBehavior: DEFAULT
+            CodecSettings:
+              H264Settings:
+                AfdSignaling: NONE
+                ColorMetadata: INSERT
+                AdaptiveQuantization: MEDIUM
+                Bitrate: 3500000
+                EntropyEncoding: CABAC
+                FlickerAq: ENABLED
+                ForceFieldPictures: DISABLED
+                FramerateControl: SPECIFIED
+                FramerateNumerator: 50
+                FramerateDenominator: 1
+                GopBReference: ENABLED
+                GopClosedCadence: 1
+                GopNumBFrames: 3
+                GopSize: 1
+                GopSizeUnits: SECONDS
+                SubgopLength: FIXED
+                ScanType: PROGRESSIVE
+                Level: H264_LEVEL_3_2
+                LookAheadRateControl: MEDIUM
+                NumRefFrames: 1
+                ParControl: SPECIFIED
+                Profile: HIGH
+                RateControlMode: CBR
+                Syntax: DEFAULT
+                SceneChangeDetect: ENABLED
+                SpatialAq: ENABLED
+                TemporalAq: ENABLED
+                TimecodeInsertion: DISABLED
+        OutputGroups:
+          - Name: !Join ['', [!Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]], "-", !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]]]]
+            OutputGroupSettings:
+              HlsGroupSettings:
+                AdMarkers: []
+                CaptionLanguageMappings: []
+                CaptionLanguageSetting: OMIT
+                ClientCache: ENABLED
+                CodecSpecification: RFC_4281
+                Destination:
+                  DestinationRefId: !Join ['', [!Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]], "-", !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]]]]
+                DirectoryStructure: SINGLE_DIRECTORY
+                DiscontinuityTags: INSERT
+                HlsCdnSettings:
+                  HlsBasicPutSettings:
+                    ConnectionRetryInterval: 1
+                    FilecacheDuration: 300
+                    NumRetries: 10
+                    RestartDelay: 15
+                HlsId3SegmentTagging: DISABLED
+                IFrameOnlyPlaylists: DISABLED
+                IncompleteSegmentBehavior: AUTO
+                IndexNSegments: 10
+                InputLossAction: EMIT_OUTPUT
+                IvInManifest: INCLUDE
+                IvSource: FOLLOWS_SEGMENT_NUMBER
+                KeepSegments: 21
+                ManifestCompression: NONE
+                ManifestDurationFormat: FLOATING_POINT
+                Mode: LIVE
+                OutputSelection: MANIFESTS_AND_SEGMENTS
+                ProgramDateTime: EXCLUDE
+                ProgramDateTimeClock: INITIALIZE_FROM_OUTPUT_TIMECODE
+                ProgramDateTimePeriod: 600
+                RedundantManifest: DISABLED
+                SegmentLength: !Ref SegmentDuration
+                SegmentationMode: USE_SEGMENT_DURATION
+                SegmentsPerSubdirectory: 10000
+                StreamInfResolution: INCLUDE
+                TimedMetadataId3Frame: PRIV
+                TimedMetadataId3Period: 10
+                TsFileMode: SEGMENTED_FILES
+            Outputs:
+              - OutputName: "output-1280x720"
+                OutputSettings:
+                  HlsOutputSettings:
+                    H265PackagingType: HVC1
+                    HlsSettings:
+                      StandardHlsSettings:
+                        M3u8Settings: {}
+                VideoDescriptionName: 1280x720
+                AudioDescriptionNames: 
+                  - high
+                CaptionDescriptionNames: []
+        TimecodeConfig:
+          Source: SYSTEMCLOCK # Use System Clock
+          SyncThreshold: 1
+      InputAttachments:
+        - InputId: !Ref s3Input
+          InputAttachmentName: !Ref s3Input
+          InputSettings:
+            DeblockFilter: DISABLED
+            DenoiseFilter: DISABLED
+            FilterStrength: 1
+            InputFilter: AUTO
+            Smpte2038DataPreference: IGNORE
+            SourceEndBehavior: LOOP
+      InputSpecification:
+        Codec: AVC
+        MaximumBitrate: MAX_50_MBPS
+        Resolution: HD
+      LogLevel: DEBUG
+      RoleArn: !GetAtt MediaLiveAccessRole.Arn
+  
+  mediaPackageV2ChannelGroup:
+    Type: AWS::MediaPackageV2::ChannelGroup
+    Properties:
+      ChannelGroupName: !Ref ChannelName
+      Description: !Sub "I love watching my favourite channel, ${ChannelName}"
+  
+  mediaPackageV2Channel:
+    Type: AWS::MediaPackageV2::Channel
+    Properties:
+      ChannelGroupName: !Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]]
+      ChannelName: !Ref ChannelName
+      Description: !Sub "I love watching my favourite channel, ${ChannelName}"
+  
+  HlsV2OriginEndpoint:
+    Type: AWS::MediaPackageV2::OriginEndpoint
+    Properties:
+      OriginEndpointName: !Join ['', [!Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]], '-HLSOriginEndpoint']]
+      ChannelGroupName: !Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]]
+      ChannelName: !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]]
+      ContainerType: TS
+      Description: !Sub "I love watching my favourite channel, ${ChannelName} over HLS"
+      HlsManifests:
+        - ManifestName: index
+          # ChildManifestName: String # The child manifest name is a short string prefix that used for all manifests inside the parent manifest.
+          # FilterConfiguration: 
+          #   Start: String
+          #   End: String
+          #   ManifestFilter: String
+          #   TimeDelaySeconds: Integer
+          # The manifest window is the time window contained in each manifest.
+          # The valid range is from 30 sec. to 900 sec. (15 minutes).
+          ManifestWindowSeconds: 30
+          # Frequency that EXT-X-PROGRAM-DATE-TIME tags are inserted into the manifest
+          # The interval must be less than the manifest window duration.
+          ProgramDateTimeIntervalSeconds: !Ref SegmentDuration
+          # ScteHls:
+          #   AdMarkerHls: String
+          # Url: String
+      Segment:
+        # Encryption:
+        #   ConstantInitializationVector: String
+        #   EncryptionMethod:
+        #     CmafEncryptionMethod: String
+        #     TsEncryptionMethod: String
+        #   KeyRotationIntervalSeconds: Integer
+        #   SpekeKeyProvider:
+        #     DrmSystems:
+        #       - String
+        #     EncryptionContractConfiguration:
+        #       PresetSpeke20Audio: String
+        #       PresetSpeke20Video: String
+        #     ResourceId: String
+        #     RoleArn: String
+        #     Url: String
+        IncludeIframeOnlyStreams: false
+        # Scte:
+        #   ScteFilter:
+        #     - 
+        SegmentDurationSeconds: !Ref SegmentDuration
+        SegmentName: segment
+        TsIncludeDvbSubtitles: false
+        TsUseAudioRenditionGroup: false
+      StartoverWindowSeconds: 1209600 # 2 week content retention period
+  
+  HlsV2OriginEndpointPolicy:
+    Type: AWS::MediaPackageV2::OriginEndpointPolicy
+    Properties:
+      ChannelGroupName: !Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]]
+      ChannelName: !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]]
+      OriginEndpointName: !Select [5, !Split [ '/', !Ref HlsV2OriginEndpoint ]]
+      Policy:
+        Version: "2012-10-17"
+        Statement:
+          # public access
+          # - Sid: "AllowPublicAccess"
+          #   Effect: "Allow"
+          #   Principal: "*"
+          #   Action:
+          #     - mediapackagev2:GetObject
+          #     - mediapackagev2:GetHeadObject
+          #   Resource: !GetAtt HlsV2OriginEndpoint.Arn
+          - Sid: AllowCloudFrontServicePrincipal
+            Effect: "Allow"
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action:
+              - mediapackagev2:GetObject
+              - mediapackagev2:GetHeadObject
+            Resource: !GetAtt HlsV2OriginEndpoint.Arn
+            Condition:
+              StringEquals:
+                aws:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+  
+  DistributionOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-DistributionOAC"
+        OriginAccessControlOriginType: mediapackagev2
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  
+  DistributionPublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Properties:
+      PublicKeyConfig:
+        Name: !Sub "${AWS::StackName}-PublicKey"
+        CallerReference: !Ref AWS::StackName
+        #Comment: String
+        EncodedKey: !Sub |
+          -----BEGIN PUBLIC KEY-----
+          
+          -----END PUBLIC KEY-----
+  
+  DistributionKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub "${AWS::StackName}-KeyGroup"
+        #Comment: String
+        Items: 
+          - !Ref DistributionPublicKey
+  
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: comment for the distribution
+        DefaultCacheBehavior:
+          TargetOriginId: !Sub "${AWS::StackName}-mediapackagev2"
+          ViewerProtocolPolicy: allow-all
+          AllowedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          # https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html
+          CachePolicyId: 08627262-05a9-4f76-9ded-b50ca2e3a84f # Elemental-MediaPackage
+          # https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-origin-request-policies.html
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # AllViewerExceptHostHeader
+          TrustedKeyGroups:
+            - !Ref DistributionKeyGroup
+        Enabled: TRUE
+        HttpVersion: http2and3
+        IPV6Enabled: TRUE
+        Origins:
+          - Id: !Sub "${AWS::StackName}-mediapackagev2"
+            DomainName: !GetAtt mediaPackageV2ChannelGroup.EgressDomain
+            # OriginPath: /out/v1/<Channel-Group-Name>/<Channel-Name>/<Channel-Origin-Endpoint>
+            OriginPath: !Join ['', ['/out/v1/', !Select [1, !Split [ '/', !Ref mediaPackageV2ChannelGroup ]], '/', !Select [3, !Split [ '/', !Ref mediaPackageV2Channel ]], '/', !Select [5, !Split [ '/', !Ref HlsV2OriginEndpoint ]]]]
+            OriginAccessControlId: !Ref DistributionOAC
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: 
+                - TLSv1.2
+        PriceClass: PriceClass_100
+        Staging: FALSE
